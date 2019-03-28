@@ -191,7 +191,7 @@ public:
     void read(const cv::FileNode &fn);
     void write(cv::FileStorage &fs) const;
 
-    std::string readClass(const cv::FileNode &fn, const std::string &class_id_override = "");
+    void readClass(const cv::FileNode &fn, const std::string &class_id_override = "");
     void writeClass(const std::string &class_id, cv::FileStorage &fs) const;
 
     void readClasses(const std::vector<std::string> &class_ids,
@@ -209,8 +209,8 @@ protected:
 
     typedef std::vector<cv::Mat> LinearMemories;
     // Indexed as [pyramid level][ColorGradient][quantized label]
-    typedef std::vector< std::vector<LinearMemories> > LinearMemoryPyramid;
-
+    typedef std::vector< std::vector<LinearMemories> > LinearMemoryPyramid;   // 这是一个3维的Mat数组, 每一个元素是一个Mat
+                                                                              
     void matchClass(const LinearMemoryPyramid &lm_pyramid,
                                     const std::vector<cv::Size> &sizes,
                                     float threshold, std::vector<Match> &matches,

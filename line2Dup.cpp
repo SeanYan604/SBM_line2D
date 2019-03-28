@@ -118,21 +118,21 @@ static Rect cropTemplates(std::vector<Template> &templates)
         templ.width = (max_x - min_x) >> templ.pyramid_level;
         templ.height = (max_y - min_y) >> templ.pyramid_level;
         templ.tl_x = min_x >> templ.pyramid_level;
-        templ.tl_y = min_y  >> templ.pyramid_level;
+        templ.tl_y = min_y >> templ.pyramid_level;
 
         for (int j = 0; j < (int)templ.features.size(); ++j)
         {
-            templ.features[j].x -= templ.tl_x;
+            templ.features[j].x -= templ.tl_x;   ///   temp中features的x,y是相对与temp的左上角的起始点算的, 其实算偏移量dx,dy
             templ.features[j].y -= templ.tl_y;
         }
     }
 
-    return Rect(min_x, min_y, max_x - min_x, max_y - min_y);
+    return Rect(min_x, min_y, max_x - min_x, max_y - min_y);   ///  返回一个BoundingBox
 }
 
 bool ColorGradientPyramid::selectScatteredFeatures(const std::vector<Candidate> &candidates,
                                                    std::vector<Feature> &features,
-                                                   size_t num_features, float distance)
+                                                   size_t num_features, float distance)   // 选取散点特征
 {
     features.clear();
     float distance_sq = distance * distance;
@@ -164,7 +164,7 @@ bool ColorGradientPyramid::selectScatteredFeatures(const std::vector<Candidate> 
             // }
         }
     }
-    if (features.size() == num_features)
+    if (features.size() == num_features)      //   同样散点特征不够的话,也返回false, 并输出没有足够的特征
     {
         return true;
     }
@@ -281,7 +281,7 @@ static void quantizedOrientations(const Mat &src, Mat &magnitude,
         magnitude.create(src.size(), CV_32F);    // 相当于对magnitude做初始化, 设定大小和数据类型,  magnitude为最后的输出数组
 
         // Allocate temporary buffers
-        Size size = src.size();
+        Size size = src.size();     //size = [cols, rows]
         Mat sobel_3dx;              // per-channel horizontal derivative
         Mat sobel_3dy;              // per-channel vertical derivative
         Mat sobel_dx(size, CV_32F); // maximum horizontal derivative
@@ -297,7 +297,7 @@ static void quantizedOrientations(const Mat &src, Mat &magnitude,
         float *ptr0y = (float *)sobel_dy.data;
         float *ptrmg = (float *)magnitude.data;
 
-        const int length1 = static_cast<const int>(sobel_3dx.step1());
+        const int length1 = static_cast<const int>(sobel_3dx.step1());           // 三通道图像的step1是cols的3倍
         const int length2 = static_cast<const int>(sobel_3dy.step1());
         const int length3 = static_cast<const int>(sobel_dx.step1());
         const int length4 = static_cast<const int>(sobel_dy.step1());
@@ -311,11 +311,11 @@ static void quantizedOrientations(const Mat &src, Mat &magnitude,
             for (int i = 0; i < length0; i += 3)     // 因为包括3个rgb通道, 所以需要每次加3
             {
                 // Use the gradient orientation of the channel whose magnitude is largest
-                int mag1 = ptrx[i + 0] * ptrx[i + 0] + ptry[i + 0] * ptry[i + 0];
+                int mag1 = ptrx[i + 0] * ptrx[i + 0] + ptry[i + 0] * ptry[i + 0];     // 分别对BGR通道求magnitude
                 int mag2 = ptrx[i + 1] * ptrx[i + 1] + ptry[i + 1] * ptry[i + 1];
                 int mag3 = ptrx[i + 2] * ptrx[i + 2] + ptry[i + 2] * ptry[i + 2];
 
-                if (mag1 >= mag2 && mag1 >= mag3)
+                if (mag1 >= mag2 && mag1 >= mag3)                // 对比三个通道 取梯度最大的这个通道的值, dx 和 dy分别放进ptr0x和ptr0y, 将mag放进ptrmg
                 {
                     ptr0x[ind] = ptrx[i];
                     ptr0y[ind] = ptry[i];
@@ -335,7 +335,7 @@ static void quantizedOrientations(const Mat &src, Mat &magnitude,
                 }
                 ++ind;
             }
-            ptrx += length1;
+            ptrx += length1;             // 计算完一行的数据之后对指针做操作,初始位置向下移动一行
             ptry += length2;
             ptr0x += length3;
             ptr0y += length4;
@@ -343,7 +343,7 @@ static void quantizedOrientations(const Mat &src, Mat &magnitude,
         }
 
         // Calculate the final gradient orientations
-        phase(sobel_dx, sobel_dy, sobel_ag, true);
+        phase(sobel_dx, sobel_dy, sobel_ag, true);            // 得到了单一通道的梯度方向图, 使用与channel =1时一样的方法进行处理 , 提取关键强梯度信息
         hysteresisGradient(magnitude, angle, sobel_ag, threshold * threshold);
     }
 
@@ -368,7 +368,7 @@ void ColorGradientPyramid::update()
     quantizedOrientations(src, magnitude, angle, weak_threshold);
 }
 
-void ColorGradientPyramid::pyrDown()
+void ColorGradientPyramid::pyrDown()              // 对图像进行降采样, 边长缩小到一半,同时把mask进行缩小
 {
     // Some parameters need to be adjusted
     num_features /= 2; /// @todo Why not 4?
@@ -425,7 +425,7 @@ bool ColorGradientPyramid::extractTemplate(Template &templ) const
                 if(magnitude_valid.at<uchar>(r, c)>0){
                     score = magnitude.at<float>(r, c);
                     bool is_max = true;
-                    for(int r_offset = -nms_kernel_size/2; r_offset <= nms_kernel_size/2; r_offset++){
+                    for(int r_offset = -nms_kernel_size/2; r_offset <= nms_kernel_size/2; r_offset++){    ///  对图像做了一次5X5区域内的非极大抑制
                         for(int c_offset = -nms_kernel_size/2; c_offset <= nms_kernel_size/2; c_offset++){
                             if(r_offset == 0 && c_offset == 0) continue;
 
@@ -437,7 +437,7 @@ bool ColorGradientPyramid::extractTemplate(Template &templ) const
                         }
                     }
 
-                    if(is_max){
+                    if(is_max){                                                                           ///  如果该像素是最大的, 则对mgnitude_valid把边上的值进行清零
                         for(int r_offset = -nms_kernel_size/2; r_offset <= nms_kernel_size/2; r_offset++){
                             for(int c_offset = -nms_kernel_size/2; c_offset <= nms_kernel_size/2; c_offset++){
                                 if(r_offset == 0 && c_offset == 0) continue;
@@ -447,20 +447,20 @@ bool ColorGradientPyramid::extractTemplate(Template &templ) const
                     }
                 }
 
-                if (score > threshold_sq && angle.at<uchar>(r, c) > 0)
+                if (score > threshold_sq && angle.at<uchar>(r, c) > 0)            /// 如果该点的mag大于thresh且存在梯度, 则把该点标记为一个candidate
                 {
-                    candidates.push_back(Candidate(c, r, getLabel(angle.at<uchar>(r, c)), score));
+                    candidates.push_back(Candidate(c, r, getLabel(angle.at<uchar>(r, c)), score));   //  getLabel将angle的二进制转换为0-7的编号
                 }
             }
         }
     }
     // We require a certain number of features
-    if (candidates.size() < num_features)
+    if (candidates.size() < num_features)                  ///  如果提取的candidates数量小于要求的特征点数, 则返回false 此时的addTemplate失败
         return false;
     // NOTE: Stable sort to agree with old code, which used std::list::sort()
     std::stable_sort(candidates.begin(), candidates.end());
 
-    // Use heuristic based on surplus of candidates in narrow outline for initial distance threshold
+    // Use heuristic(启发式的) based on surplus(剩余的) of candidates in narrow outline for initial distance threshold
     float distance = static_cast<float>(candidates.size() / num_features + 1);
     if (!selectScatteredFeatures(candidates, templ.features, num_features, distance))
     {
@@ -517,63 +517,27 @@ void ColorGradient::write(FileStorage &fs) const
 *                                                                 Response maps                                                                                    *
 \****************************************************************************************/
 
-static void orUnaligned8u(const uchar *src, const int src_stride,
-                          uchar *dst, const int dst_stride,
+static void orUnaligned8u(const uchar *src, const int src_stride,      //  src为一个像素, src_stride为图一行的像素数
+                          uchar *dst, const int dst_stride,            // width, height为 图像中以src这个像素为左上角点的矩形的宽高, 直接到图像边缘
                           const int width, const int height)
 {
-//#if CV_SSE2
-//    volatile bool haveSSE2 = checkHardwareSupport(CPU_SSE2);
-//#if CV_SSE3
-//    volatile bool haveSSE3 = checkHardwareSupport(CPU_SSE3);
-//#endif
-//    bool src_aligned = reinterpret_cast<unsigned long long>(src) % 16 == 0;
-//#endif
-
     for (int r = 0; r < height; ++r)
-    {
-        int c = 0;
+        {
+            int c = 0;
 
-// compiler have do this for us
-//#if CV_SSE2
-//        // Use aligned loads if possible
-//        if (haveSSE2 && src_aligned)
-//        {
-//            for (; c < width - 15; c += 16)
-//            {
-//                const __m128i *src_ptr = reinterpret_cast<const __m128i *>(src + c);
-//                __m128i *dst_ptr = reinterpret_cast<__m128i *>(dst + c);
-//                *dst_ptr = _mm_or_si128(*dst_ptr, *src_ptr);
-//            }
-//        }
-//#if CV_SSE3
-//        // Use LDDQU for fast unaligned load
-//        else if (haveSSE3)
-//        {
-//            for (; c < width - 15; c += 16)
-//            {
-//                __m128i val = _mm_lddqu_si128(reinterpret_cast<const __m128i *>(src + c));
-//                __m128i *dst_ptr = reinterpret_cast<__m128i *>(dst + c);
-//                *dst_ptr = _mm_or_si128(*dst_ptr, val);
-//            }
-//        }
-//#endif
-//        // Fall back to MOVDQU
-//        else if (haveSSE2)
-//        {
-//            for (; c < width - 15; c += 16)
-//            {
-//                __m128i val = _mm_loadu_si128(reinterpret_cast<const __m128i *>(src + c));
-//                __m128i *dst_ptr = reinterpret_cast<__m128i *>(dst + c);
-//                *dst_ptr = _mm_or_si128(*dst_ptr, val);
-//            }
-//        }
-//#endif
-        for (; c < width; ++c)
-            dst[c] |= src[c];
+            // not aligned, which will happen because we move 1 bytes a time for spreading
+            while (reinterpret_cast<unsigned long long>(src + c) % 16 != 0) {
+                dst[c] |= src[c];
+                c++;
+            }
 
-        // Advance to next row
-        src += src_stride;
-        dst += dst_stride;
+
+            for(; c<width; c++)
+                dst[c] |= src[c];
+
+            // Advance to next row
+            src += src_stride;
+            dst += dst_stride;
     }
 }
 
@@ -610,7 +574,7 @@ static void computeResponseMaps(const Mat &src, std::vector<Mat> &response_maps)
     Mat lsb4(src.size(), CV_8U);
     Mat msb4(src.size(), CV_8U);
 
-    for (int r = 0; r < src.rows; ++r)
+    for (int r = 0; r < src.rows; ++r)   // 这两个循环把src中的值分为8为的低四位和高四位来进行存储,分别为lsb和msb
     {
         const uchar *src_r = src.ptr(r);
         uchar *lsb4_r = lsb4.ptr(r);
@@ -625,48 +589,21 @@ static void computeResponseMaps(const Mat &src, std::vector<Mat> &response_maps)
         }
     }
 
-#if CV_SSSE3
-    volatile bool haveSSSE3 = checkHardwareSupport(CV_CPU_SSSE3);
-    if (haveSSSE3)
+    // For each of the 8 quantized orientations...
+    for (int ori = 0; ori < 8; ++ori)
     {
-        const __m128i *lut = reinterpret_cast<const __m128i *>(SIMILARITY_LUT);
-        for (int ori = 0; ori < 8; ++ori)
+        uchar *map_data = response_maps[ori].ptr<uchar>();
+        uchar *lsb4_data = lsb4.ptr<uchar>();
+        uchar *msb4_data = msb4.ptr<uchar>();
+        const uchar *lut_low = SIMILARITY_LUT + 32 * ori;  //SIMILARITY_LUT为相似度数组, 高位低位各16位,分别表示0000-1111,从0方向到7方向,对应位为1则计分为4,邻近方向计分为1,其余计分为0,相当于table查表了
+        const uchar *lut_hi = lut_low + 16;
+
+        for (int i = 0; i < src.rows * src.cols; ++i)
         {
-            __m128i *map_data = response_maps[ori].ptr<__m128i>();
-            __m128i *lsb4_data = lsb4.ptr<__m128i>();
-            __m128i *msb4_data = msb4.ptr<__m128i>();
-
-            // Precompute the 2D response map S_i (section 2.4)
-            for (int i = 0; i < (src.rows * src.cols) / 16; ++i)
-            {
-                // Using SSE shuffle for table lookup on 4 orientations at a time
-                // The most/least significant 4 bits are used as the LUT index
-                __m128i res1 = _mm_shuffle_epi8(lut[2 * ori + 0], lsb4_data[i]);
-                __m128i res2 = _mm_shuffle_epi8(lut[2 * ori + 1], msb4_data[i]);
-
-                // Combine the results into a single similarity score
-                map_data[i] = _mm_max_epu8(res1, res2);
-            }
+            map_data[i] = std::max(lut_low[lsb4_data[i]], lut_hi[msb4_data[i]]); // 求出src低4位和高4位对应table中分数的max
         }
     }
-    else
-#endif
-    {
-        // For each of the 8 quantized orientations...
-        for (int ori = 0; ori < 8; ++ori)
-        {
-            uchar *map_data = response_maps[ori].ptr<uchar>();
-            uchar *lsb4_data = lsb4.ptr<uchar>();
-            uchar *msb4_data = msb4.ptr<uchar>();
-            const uchar *lut_low = SIMILARITY_LUT + 32 * ori;
-            const uchar *lut_hi = lut_low + 16;
 
-            for (int i = 0; i < src.rows * src.cols; ++i)
-            {
-                map_data[i] = std::max(lut_low[lsb4_data[i]], lut_hi[msb4_data[i]]);
-            }
-        }
-    }
 }
 
 static void linearize(const Mat &response_map, Mat &linearized, int T)
@@ -1030,16 +967,17 @@ std::vector<Match> Detector::match(Mat source, float threshold,
                                    const std::vector<std::string> &class_ids, const Mat mask) const
 {
     Timer timer;
-    std::vector<Match> matches;
+    std::vector<Match> matches;    //  定义最后得到的matches向量,   输入source待处理图片, threshold阈值, ids类的名称,  mask为一个空的cv::Mat
 
     // Initialize each ColorGradient with our sources
-    std::vector<Ptr<ColorGradientPyramid>> quantizers;
+    std::vector<Ptr<ColorGradientPyramid>> quantizers;     //  量化图像的vector
+
     CV_Assert(mask.empty() || mask.size() == source.size());
-    quantizers.push_back(modality->process(source, mask));
+    quantizers.push_back(modality->process(source, mask));   // 对source和mask做整合,开始构建ColorGradientPyramid, 开始对图像做量化了,返回量化后的CGP列表
 
     // pyramid level -> ColorGradient -> quantization
     LinearMemoryPyramid lm_pyramid(pyramid_levels,
-                                   std::vector<LinearMemories>(1, LinearMemories(8)));
+                                   std::vector<LinearMemories>(1, LinearMemories(8)));   // 定义线性金字塔空间,第一维是金字塔的层数,第二维为1,第三维为8,  这8个分别为8个方向向量的模板
 
     // For each pyramid level, precompute linear memories for each ColorGradient
     std::vector<Size> sizes;
@@ -1091,9 +1029,11 @@ std::vector<Match> Detector::match(Mat source, float threshold,
     }
 
     // Sort matches by similarity, and prune any duplicates introduced by pyramid refinement
-    std::sort(matches.begin(), matches.end());
-    std::vector<Match>::iterator new_end = std::unique(matches.begin(), matches.end());
-    matches.erase(new_end, matches.end());
+    std::sort(matches.begin(), matches.end());    // 先对matches 按similarity排序, 去重标准三步骤
+    std::vector<Match>::iterator new_end = std::unique(matches.begin(), matches.end());  ///  通过unique对相邻的相同元素去重,并将重复的移到vector最后面,返回的是去重好的最后一位的位置指针
+    matches.erase(new_end, matches.end());                        ///  将去重后的最后一个元素地址一直到vector的最后删去
+ 
+
 
     timer.out("templ match");
 
@@ -1108,7 +1048,7 @@ struct MatchPredicate
     float threshold;
 };
 
-void Detector::matchClass(const LinearMemoryPyramid &lm_pyramid,
+void Detector::matchClass(const LinearMemoryPyramid &lm_pyramid,   // 该函数实现Class的匹配
                           const std::vector<Size> &sizes,
                           float threshold, std::vector<Match> &matches,
                           const std::string &class_id,
@@ -1123,7 +1063,7 @@ void Detector::matchClass(const LinearMemoryPyramid &lm_pyramid,
 
         // Compute similarity maps for each ColorGradient at lowest pyramid level
         Mat similarities;
-        int lowest_start = static_cast<int>(tp.size() - 1);
+        int lowest_start = static_cast<int>(tp.size() - 1);    // start是从最上层金字塔开始的, 从低分辨率的图开始
         int lowest_T = T_at_level.back();
         int num_features = 0;
         int feature_64 = -1;
@@ -1358,7 +1298,7 @@ void Detector::write(FileStorage &fs) const
     modality->write(fs);
 }
 
-std::string Detector::readClass(const FileNode &fn, const std::string &class_id_override)
+void Detector::readClass(const FileNode &fn, const std::string &class_id_override)
 {
     // Detector should not already have this class
     String class_id;
@@ -1396,7 +1336,6 @@ std::string Detector::readClass(const FileNode &fn, const std::string &class_id_
     }
 
     class_templates.insert(v);
-    return class_id;
 }
 
 void Detector::writeClass(const std::string &class_id, FileStorage &fs) const

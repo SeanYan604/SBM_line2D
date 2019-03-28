@@ -64,7 +64,7 @@ namespace  cv_dnn {
             if (keep)
                 indices.push_back(idx);
             if (keep && eta < 1 && adaptive_threshold > 0.5) {
-            adaptive_threshold *= eta;
+                adaptive_threshold *= eta;
             }
         }
     }
