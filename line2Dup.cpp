@@ -6,7 +6,7 @@ using namespace cv;
 
 #include <chrono>
 
-namespace line2Dup
+namespace linemod
 {
 /**
  * \brief Get the label [0,8) of the single bit set in quantized.
@@ -130,7 +130,7 @@ static Rect cropTemplates(std::vector<Template> &templates)
     return Rect(min_x, min_y, max_x - min_x, max_y - min_y);   ///  返回一个BoundingBox
 }
 
-bool ColorGradientPyramid::selectScatteredFeatures(const std::vector<Candidate> &candidates,
+bool QuantizedPyramid::selectScatteredFeatures(const std::vector<Candidate> &candidates,
                                                    std::vector<Feature> &features,
                                                    size_t num_features, float distance)   // 选取散点特征
 {
@@ -175,6 +175,23 @@ bool ColorGradientPyramid::selectScatteredFeatures(const std::vector<Candidate> 
     }
 }
 
+Ptr<Modality> Modality::create(const String& modality_type)
+{
+  if (modality_type == "ColorGradient")
+    return makePtr<ColorGradient>();
+  else if (modality_type == "DepthNormal")
+    return makePtr<DepthNormal>();
+  else
+    return Ptr<Modality>();
+}
+
+Ptr<Modality> Modality::create(const FileNode& fn)
+{
+  String type = fn["type"];
+  Ptr<Modality> modality = create(type);
+  modality->read(fn);
+  return modality;
+}
 /****************************************************************************************\
 *                                                         Color gradient ColorGradient                                                                        *
 \****************************************************************************************/
@@ -476,9 +493,9 @@ bool ColorGradientPyramid::extractTemplate(Template &templ) const
 }
 
 ColorGradient::ColorGradient()
-    : weak_threshold(10.0f),
+    : weak_threshold(10.0f),      ///  ori : 10.0f
       num_features(63),
-      strong_threshold(55.0f)
+      strong_threshold(55.0f)    ///  ori : 55.0f
 {
 }
 
@@ -491,7 +508,7 @@ ColorGradient::ColorGradient(float _weak_threshold, size_t _num_features, float 
 
 static const char CG_NAME[] = "ColorGradient";
 
-std::string ColorGradient::name() const
+cv::String ColorGradient::name() const
 {
     return CG_NAME;
 }
@@ -640,7 +657,7 @@ static void linearize(const Mat &response_map, Mat &linearized, int T)
 \****************************************************************************************/
 
 static const unsigned char *accessLinearMemory(const std::vector<Mat> &linear_memories,
-                                               const Feature &f, int T, int W)
+                                               const Feature &f, int T, int W)    //该函数直接返回在线性表中, 对应目标模板位置的值
 {
     // Retrieve the TxT grid of linear memories associated with the feature label
     const Mat &memory_grid = linear_memories[f.label];
@@ -708,7 +725,7 @@ static void similarity(const std::vector<Mat> &linear_memories, const Template &
         {
             __m128i const zero = _mm_setzero_si128();
             // Fall back to MOVDQU
-            for (; j < template_positions - 7; j += 8)
+            for (; j < template_positions - 7; j += 8)   // 偏移步长为8
             {
                 __m128i responses = _mm_loadl_epi64(reinterpret_cast<const __m128i *>(lm_ptr + j));
                 __m128i *dst_ptr_sse = reinterpret_cast<__m128i *>(dst_ptr + j);
@@ -716,8 +733,9 @@ static void similarity(const std::vector<Mat> &linear_memories, const Template &
                 *dst_ptr_sse = _mm_add_epi16(*dst_ptr_sse, responses);
             }
         }
+        else
 #endif
-        for (; j < template_positions; ++j)
+        for (; j < template_positions; ++j)                      // 可注释可留  影响不大
             dst_ptr[j] = short(dst_ptr[j] + short(lm_ptr[j]));
     }
 }
@@ -742,7 +760,8 @@ static void similarityLocal(const std::vector<Mat> &linear_memories, const Templ
     {
         Feature f = templ.features[i];
         f.x += offset_x;
-        f.y += offset_y;
+        f.y += offset_y;                  /// 从点center开始进行模板滑窗
+
         // Discard feature if out of bounds, possibly due to applying the offset
         if (f.x < 0 || f.y < 0 || f.x >= size.width || f.y >= size.height)
             continue;
@@ -752,7 +771,7 @@ static void similarityLocal(const std::vector<Mat> &linear_memories, const Templ
         if (haveSSE2)
         {
             __m128i const zero = _mm_setzero_si128();
-            for (int row = 0; row < 16; ++row)
+            for (int row = 0; row < 16; ++row)     /// 这个是要取一个块的相似度值
             {
                 __m128i aligned_low = _mm_loadl_epi64(reinterpret_cast<const __m128i *>(lm_ptr));
                 __m128i aligned_high = _mm_loadl_epi64(reinterpret_cast<const __m128i *>(lm_ptr + 8));
@@ -793,21 +812,27 @@ static void similarity_64(const std::vector<Mat> &linear_memories, const Templat
     int H = size.height / T;
 
     // Feature dimensions, decimated by factor T and rounded up
-    int wf = (templ.width - 1) / T + 1;
+    int wf = (templ.width - 1) / T + 1;    // 为了保证划窗在不溢出, 需要算多一个划窗位, 要么能被T整除,要么多一个
     int hf = (templ.height - 1) / T + 1;
 
     // Span is the range over which we can shift the template around the input image
-    int span_x = W - wf;
+    int span_x = W - wf;   // 模板可以滑动的空间 x,y,   尽量少了一个窗口位
     int span_y = H - hf;
 
     // Compute number of contiguous (in memory) pixels to check when sliding feature over
     // image. This allows template to wrap around left/right border incorrectly, so any
     // wrapped template matches must be filtered out!
-    int template_positions = span_y * W + span_x + 1; // why add 1?
-    //int template_positions = (span_y - 1) * W + span_x; // More correct?
+    int template_positions = span_y * W + span_x + 1; // why add 1?    
+    
+    //   加一是包含第一个位置, 这个position是计算所有可以移动temp的位置个数, 
+    //   因为是线性表, 每一行的长度都是W*H, 而最开始的模板在W方向上已经占了wf个长度了,H方向上占了hf长度,  对于总长度W*H来说是缩短了 (hf - 1)*W + wf, 
+    //   W*H - (hf - 1)*W - wf = W*(H - hf) + W - wf = W*span_y + span_x   (再加一是包含起始位置)
 
     /// @todo In old code, dst is buffer of size m_U. Could make it something like
     /// (span_x)x(span_y) instead?
+    //  Nope, due to the linear structure, it's more reasonable to be a buffer, 
+    //     rather than a (Mat), it is a little different from a convolutional operation.
+
     dst = Mat::zeros(H, W, CV_8U);
     uchar *dst_ptr = dst.ptr<uchar>();
 
@@ -834,31 +859,19 @@ static void similarity_64(const std::vector<Mat> &linear_memories, const Templat
         // Now we do an aligned/unaligned add of dst_ptr and lm_ptr with template_positions elements
         int j = 0;
 #if CV_SSE2
-#if CV_SSE3
-        if (haveSSE3)
-        {
-            // LDDQU may be more efficient than MOVDQU for unaligned load of next 16 responses
-            for (; j < template_positions - 15; j += 16)
-            {
-                __m128i responses = _mm_lddqu_si128(reinterpret_cast<const __m128i *>(lm_ptr + j));
-                __m128i *dst_ptr_sse = reinterpret_cast<__m128i *>(dst_ptr + j);
-                *dst_ptr_sse = _mm_add_epi8(*dst_ptr_sse, responses);
-            }
-        }
-        else
-#endif
             if (haveSSE2)
         {
             // Fall back to MOVDQU
-            for (; j < template_positions - 15; j += 16)
+            for (; j < template_positions - 15; j += 16)  ///  18为temp滑动的步长
             {
                 __m128i responses = _mm_loadu_si128(reinterpret_cast<const __m128i *>(lm_ptr + j));
                 __m128i *dst_ptr_sse = reinterpret_cast<__m128i *>(dst_ptr + j);
                 *dst_ptr_sse = _mm_add_epi8(*dst_ptr_sse, responses);
             }
         }
+        else
 #endif
-        for (; j < template_positions; ++j)
+        for (; j < template_positions; ++j)                  // 可注释可留  影响不大
             dst_ptr[j] = uchar(dst_ptr[j] + lm_ptr[j]);
     }
 }
@@ -943,22 +956,25 @@ static void similarityLocal_64(const std::vector<Mat> &linear_memories, const Te
 
 Detector::Detector()
 {
-    this->modality = makePtr<ColorGradient>();
+    this->detect_mode = "Line2D";
+    this->CG_modality = makePtr<ColorGradient>();
     pyramid_levels = 2;
     T_at_level.push_back(5);
     T_at_level.push_back(8);
 }
 
-Detector::Detector(std::vector<int> T)
+Detector::Detector(std::vector<int> T, std::string mode)
 {
-    this->modality = makePtr<ColorGradient>();
+    this->detect_mode = mode;
+    this->CG_modality = makePtr<ColorGradient>();
     pyramid_levels = T.size();
     T_at_level = T;
 }
 
-Detector::Detector(int num_features, std::vector<int> T)
+Detector::Detector(int num_features, std::vector<int> T, std::string mode)
 {
-    this->modality = makePtr<ColorGradient>(10.0f, num_features, 55.0f);
+    this->detect_mode = mode;
+    this->CG_modality = makePtr<ColorGradient>(10.0f, num_features, 55.0f);
     pyramid_levels = T.size();
     T_at_level = T;
 }
@@ -970,10 +986,10 @@ std::vector<Match> Detector::match(Mat source, float threshold,
     std::vector<Match> matches;    //  定义最后得到的matches向量,   输入source待处理图片, threshold阈值, ids类的名称,  mask为一个空的cv::Mat
 
     // Initialize each ColorGradient with our sources
-    std::vector<Ptr<ColorGradientPyramid>> quantizers;     //  量化图像的vector
+    std::vector< Ptr<QuantizedPyramid> > quantizers;     //  量化图像的vector
 
     CV_Assert(mask.empty() || mask.size() == source.size());
-    quantizers.push_back(modality->process(source, mask));   // 对source和mask做整合,开始构建ColorGradientPyramid, 开始对图像做量化了,返回量化后的CGP列表
+    quantizers.push_back(CG_modality->process(source, mask));   // 对source和mask做整合,开始构建ColorGradientPyramid, 开始对图像做量化了,返回量化后的CGP列表
 
     // pyramid level -> ColorGradient -> quantization
     LinearMemoryPyramid lm_pyramid(pyramid_levels,
@@ -1029,6 +1045,7 @@ std::vector<Match> Detector::match(Mat source, float threshold,
     }
 
     // Sort matches by similarity, and prune any duplicates introduced by pyramid refinement
+
     std::sort(matches.begin(), matches.end());    // 先对matches 按similarity排序, 去重标准三步骤
     std::vector<Match>::iterator new_end = std::unique(matches.begin(), matches.end());  ///  通过unique对相邻的相同元素去重,并将重复的移到vector最后面,返回的是去重好的最后一位的位置指针
     matches.erase(new_end, matches.end());                        ///  将去重后的最后一个元素地址一直到vector的最后删去
@@ -1063,12 +1080,14 @@ void Detector::matchClass(const LinearMemoryPyramid &lm_pyramid,   // 该函数�
 
         // Compute similarity maps for each ColorGradient at lowest pyramid level
         Mat similarities;
-        int lowest_start = static_cast<int>(tp.size() - 1);    // start是从最上层金字塔开始的, 从低分辨率的图开始
+        float angle = tp.first[0];
+        float scale = tp.first[1];
+        int lowest_start = static_cast<int>(tp.second.size() - 1);     // 计算金字塔的层数,从最上面一层开始
         int lowest_T = T_at_level.back();
         int num_features = 0;
         int feature_64 = -1;
         {
-            const Template &templ = tp[lowest_start];
+            const Template &templ = tp.second[lowest_start];
             num_features += static_cast<int>(templ.features.size());
             if (feature_64 <= 0)
             {
@@ -1104,19 +1123,19 @@ void Detector::matchClass(const LinearMemoryPyramid &lm_pyramid,   // 该函数�
             for (int c = 0; c < similarities.cols; ++c)
             {
                 int raw_score = row[c];
-                float score = (raw_score * 100.f) / (4 * num_features);
+                float score = (raw_score * 100.f) / (4 * num_features);   ///  对score进行统计 
 
-                if (score > threshold)
+                if (score > threshold)    //这个threshold传进来是90
                 {
-                    int offset = lowest_T / 2 + (lowest_T % 2 - 1);
-                    int x = c * lowest_T + offset;
+                    int offset = lowest_T / 2 + (lowest_T % 2 - 1);   /// 这个偏移是给定的, 定在T滑块的中间位置
+                    int x = c * lowest_T + offset;                    /// 通过T的大小进行反算回去坐标
                     int y = r * lowest_T + offset;
-                    candidates.push_back(Match(x, y, score, class_id, static_cast<int>(template_id)));
+                    candidates.push_back(Match(x, y, angle, scale, score, class_id, static_cast<int>(template_id)));
                 }
             }
         }
 
-        // Locally refine each match by marching up the pyramid
+        // Locally refine each match by marching up the pyramid   (如果只有一层金字塔,则无需这一步骤)
         for (int l = pyramid_levels - 2; l >= 0; --l)
         {
             const std::vector<LinearMemories> &lms = lm_pyramid[l];
@@ -1125,8 +1144,8 @@ void Detector::matchClass(const LinearMemoryPyramid &lm_pyramid,   // 该函数�
             Size size = sizes[l];
             int border = 8 * T;
             int offset = T / 2 + (T % 2 - 1);
-            int max_x = size.width - tp[start].width - border;
-            int max_y = size.height - tp[start].height - border;
+            int max_x = size.width - tp.second[start].width - border;
+            int max_y = size.height - tp.second[start].height - border;
 
             Mat similarities2;
             for (int m = 0; m < (int)candidates.size(); ++m)
@@ -1141,13 +1160,13 @@ void Detector::matchClass(const LinearMemoryPyramid &lm_pyramid,   // 该函数�
 
                 // Require 8 (reduced) row/cols to the down/left, plus the template size
                 x = std::min(x, max_x);
-                y = std::min(y, max_y);
+                y = std::min(y, max_y);            ///       边缘上留一个8*T的边框
 
                 // Compute local similarity maps for each ColorGradient
                 int numFeatures = 0;
                 feature_64 = -1;
                 {
-                    const Template &templ = tp[start];
+                    const Template &templ = tp.second[start];
                     numFeatures += static_cast<int>(templ.features.size());
                     if (feature_64 <= 0)
                     {
@@ -1166,7 +1185,7 @@ void Detector::matchClass(const LinearMemoryPyramid &lm_pyramid,   // 该函数�
                     }
                     else if (feature_64 == 2)
                     {
-                        similarityLocal(lms[0], templ, similarities2, size, T, Point(x, y));
+                        similarityLocal(lms[0], templ, similarities2, size, T, Point(x, y));        ///上一层金字塔是对特征点操作, 这次是传点进去,对点周围的一块区域进行匹配
                     }
                 }
 
@@ -1178,7 +1197,7 @@ void Detector::matchClass(const LinearMemoryPyramid &lm_pyramid,   // 该函数�
                 // Find best local adjustment
                 float best_score = 0;
                 int best_r = -1, best_c = -1;
-                for (int r = 0; r < similarities2.rows; ++r)
+                for (int r = 0; r < similarities2.rows; ++r)             /// 对提取出的块, 计算其中相似度最高的点
                 {
                     ushort *row = similarities2.ptr<ushort>(r);
                     for (int c = 0; c < similarities2.cols; ++c)
@@ -1202,25 +1221,27 @@ void Detector::matchClass(const LinearMemoryPyramid &lm_pyramid,   // 该函数�
 
             // Filter out any matches that drop below the similarity threshold
             std::vector<Match>::iterator new_end = std::remove_if(candidates.begin(), candidates.end(),
-                                                                  MatchPredicate(threshold));
+                                                                  MatchPredicate(threshold));    /// similarity < threshold 为true 则将要删的元素移到后面,返回不要删的最后一个元素的地址
             candidates.erase(new_end, candidates.end());
         }
-        matches.insert(matches.end(), candidates.begin(), candidates.end());
+        matches.insert(matches.end(), candidates.begin(), candidates.end()); ///最后将得到的candidate插入matches的最后, 再到下一个模板的匹配
     }
 }
 
 int Detector::addTemplate(const Mat source, const std::string &class_id,
-                          const Mat &object_mask, int num_features)
+                          const Mat &object_mask, float angle, float scale, int num_features)
 {
     std::vector<TemplatePyramid> &template_pyramids = class_templates[class_id];
     int template_id = static_cast<int>(template_pyramids.size());
 
     TemplatePyramid tp;
-    tp.resize(pyramid_levels);
+    tp.first.push_back (angle);
+    tp.first.push_back (scale);
+    tp.second.resize(pyramid_levels);
 
     {
         // Extract a template at each pyramid level
-        Ptr<ColorGradientPyramid> qp = modality->process(source, object_mask);
+        Ptr<QuantizedPyramid> qp = CG_modality->process(source, object_mask);
 
         if(num_features > 0)
         qp->num_features = num_features;
@@ -1231,14 +1252,14 @@ int Detector::addTemplate(const Mat source, const std::string &class_id,
             if (l > 0)
                 qp->pyrDown();
 
-            bool success = qp->extractTemplate(tp[l]);
+            bool success = qp->extractTemplate(tp.second[l]);
             if (!success)
                 return -1;
         }
     }
 
     //    Rect bb =
-    cropTemplates(tp);
+    cropTemplates(tp.second);
 
     /// @todo Can probably avoid a copy of tp here with swap
     template_pyramids.push_back(tp);
@@ -1249,7 +1270,7 @@ const std::vector<Template> &Detector::getTemplates(const std::string &class_id,
     TemplatesMap::const_iterator i = class_templates.find(class_id);
     CV_Assert(i != class_templates.end());
     CV_Assert(i->second.size() > size_t(template_id));
-    return i->second[template_id];
+    return i->second[template_id].second;
 }
 
 int Detector::numTemplates() const
@@ -1287,7 +1308,7 @@ void Detector::read(const FileNode &fn)
     pyramid_levels = fn["pyramid_levels"];
     fn["T"] >> T_at_level;
 
-    modality = makePtr<ColorGradient>();
+    CG_modality = makePtr<ColorGradient>();
 }
 
 void Detector::write(FileStorage &fs) const
@@ -1295,7 +1316,7 @@ void Detector::write(FileStorage &fs) const
     fs << "pyramid_levels" << pyramid_levels;
     fs << "T" << T_at_level;
 
-    modality->write(fs);
+    CG_modality->write(fs);
 }
 
 void Detector::readClass(const FileNode &fn, const std::string &class_id_override)
@@ -1323,15 +1344,17 @@ void Detector::readClass(const FileNode &fn, const std::string &class_id_overrid
     for (; tps_it != tps_it_end; ++tps_it, ++expected_id)
     {
         int template_id = (*tps_it)["template_id"];
+        tps[template_id].first.push_back((*tps_it)["template_angle"]);   /// 在这里增加读入时候的template的angle 和scale
+        tps[template_id].first.push_back((*tps_it)["template_scale"]);
         CV_Assert(template_id == expected_id);
         FileNode templates_fn = (*tps_it)["templates"];
-        tps[template_id].resize(templates_fn.size());
+        tps[template_id].second.resize(templates_fn.size());
 
         FileNodeIterator templ_it = templates_fn.begin(), templ_it_end = templates_fn.end();
         int idx = 0;
         for (; templ_it != templ_it_end; ++templ_it)
         {
-            tps[template_id][idx++].read(*templ_it);
+            tps[template_id].second[idx++].read(*templ_it);
         }
     }
 
@@ -1353,12 +1376,14 @@ void Detector::writeClass(const std::string &class_id, FileStorage &fs) const
         const TemplatePyramid &tp = tps[i];
         fs << "{";
         fs << "template_id" << int(i); //TODO is this cast correct? won't be good if rolls over...
+        fs << "template_angle" << tp.first[0];
+        fs << "template_scale" << tp.first[1];
         fs << "templates"
            << "[";
-        for (size_t j = 0; j < tp.size(); ++j)
+        for (size_t j = 0; j < tp.second.size(); ++j)
         {
             fs << "{";
-            tp[j].write(fs);
+            tp.second[j].write(fs);
             fs << "}"; // current template
         }
         fs << "]"; // templates
@@ -1391,4 +1416,300 @@ void Detector::writeClasses(const std::string &format) const
     }
 }
 
-} // namespace line2Dup
+
+
+
+/// with normal
+
+/****************************************************************************************\
+*                                                             Depth normal modality      *
+\****************************************************************************************/
+
+// Contains GRANULARITY and NORMAL_LUT
+#include "normal_lut.i"
+
+static void accumBilateral(long delta, long i, long j, long * A, long * b, int threshold)
+{
+  long f = std::abs(delta) < threshold ? 1 : 0;
+
+  const long fi = f * i;
+  const long fj = f * j;
+
+  A[0] += fi * i;
+  A[1] += fi * j;
+  A[3] += fj * j;
+  b[0]  += fi * delta;
+  b[1]  += fj * delta;
+}
+
+/**
+ * \brief Compute quantized normal image from depth image.
+ *
+ * Implements section 2.6 "Extension to Dense Depth Sensors."
+ *
+ * \param[in]  src  The source 16-bit depth image (in mm).
+ * \param[out] dst  The destination 8-bit image. Each bit represents one bin of
+ *                  the view cone.
+ * \param distance_threshold   Ignore pixels beyond this distance.
+ * \param difference_threshold When computing normals, ignore contributions of pixels whose
+ *                             depth difference with the central pixel is above this threshold.
+ *
+ * \todo Should also need camera model, or at least focal lengths? Replace distance_threshold with mask?
+ */
+static void quantizedNormals(const Mat& src, Mat& dst, int distance_threshold,
+                      int difference_threshold)
+{
+  dst = Mat::zeros(src.size(), CV_8U);
+
+  const unsigned short * lp_depth   = src.ptr<ushort>();
+  unsigned char  * lp_normals = dst.ptr<uchar>();
+
+  const int l_W = src.cols;
+  const int l_H = src.rows;
+
+  const int l_r = 5; // used to be 7
+  const int l_offset0 = -l_r - l_r * l_W;
+  const int l_offset1 =    0 - l_r * l_W;
+  const int l_offset2 = +l_r - l_r * l_W;
+  const int l_offset3 = -l_r;
+  const int l_offset4 = +l_r;
+  const int l_offset5 = -l_r + l_r * l_W;
+  const int l_offset6 =    0 + l_r * l_W;
+  const int l_offset7 = +l_r + l_r * l_W;
+
+  const int l_offsetx = GRANULARITY / 2;
+  const int l_offsety = GRANULARITY / 2;
+
+  for (int l_y = l_r; l_y < l_H - l_r - 1; ++l_y)
+  {
+    const unsigned short * lp_line = lp_depth + (l_y * l_W + l_r);
+    unsigned char * lp_norm = lp_normals + (l_y * l_W + l_r);
+
+    for (int l_x = l_r; l_x < l_W - l_r - 1; ++l_x)
+    {
+      long l_d = lp_line[0];
+
+      if (l_d < distance_threshold)
+      {
+        // accum
+        long l_A[4]; l_A[0] = l_A[1] = l_A[2] = l_A[3] = 0;
+        long l_b[2]; l_b[0] = l_b[1] = 0;
+        accumBilateral(lp_line[l_offset0] - l_d, -l_r, -l_r, l_A, l_b, difference_threshold);
+        accumBilateral(lp_line[l_offset1] - l_d,    0, -l_r, l_A, l_b, difference_threshold);
+        accumBilateral(lp_line[l_offset2] - l_d, +l_r, -l_r, l_A, l_b, difference_threshold);
+        accumBilateral(lp_line[l_offset3] - l_d, -l_r,    0, l_A, l_b, difference_threshold);
+        accumBilateral(lp_line[l_offset4] - l_d, +l_r,    0, l_A, l_b, difference_threshold);
+        accumBilateral(lp_line[l_offset5] - l_d, -l_r, +l_r, l_A, l_b, difference_threshold);
+        accumBilateral(lp_line[l_offset6] - l_d,    0, +l_r, l_A, l_b, difference_threshold);
+        accumBilateral(lp_line[l_offset7] - l_d, +l_r, +l_r, l_A, l_b, difference_threshold);
+
+        // solve
+        long l_det =  l_A[0] * l_A[3] - l_A[1] * l_A[1];
+        long l_ddx =  l_A[3] * l_b[0] - l_A[1] * l_b[1];
+        long l_ddy = -l_A[1] * l_b[0] + l_A[0] * l_b[1];
+
+        /// @todo Magic number 1150 is focal length? This is something like
+        /// f in SXGA mode, but in VGA is more like 530.
+        float l_nx = static_cast<float>(1150 * l_ddx);
+        float l_ny = static_cast<float>(1150 * l_ddy);
+        float l_nz = static_cast<float>(-l_det * l_d);
+
+        float l_sqrt = sqrtf(l_nx * l_nx + l_ny * l_ny + l_nz * l_nz);
+
+        if (l_sqrt > 0)
+        {
+          float l_norminv = 1.0f / (l_sqrt);
+
+          l_nx *= l_norminv;
+          l_ny *= l_norminv;
+          l_nz *= l_norminv;
+
+          //*lp_norm = fabs(l_nz)*255;
+
+          int l_val1 = static_cast<int>(l_nx * l_offsetx + l_offsetx);
+          int l_val2 = static_cast<int>(l_ny * l_offsety + l_offsety);
+          int l_val3 = static_cast<int>(l_nz * GRANULARITY + GRANULARITY);
+
+          *lp_norm = NORMAL_LUT[l_val3][l_val2][l_val1];
+        }
+        else
+        {
+          *lp_norm = 0; // Discard shadows from depth sensor
+        }
+      }
+      else
+      {
+        *lp_norm = 0; //out of depth
+      }
+      ++lp_line;
+      ++lp_norm;
+    }
+  }
+  medianBlur(dst, dst, 5);
+}
+
+DepthNormalPyramid::DepthNormalPyramid(const Mat& src, const Mat& _mask,
+                                       int distance_threshold, int difference_threshold, size_t _num_features,
+                                       int _extract_threshold)
+  : mask(_mask),
+    pyramid_level(0),
+    num_features(_num_features),
+    extract_threshold(_extract_threshold)
+{
+   quantizedNormals(src, normal, distance_threshold, difference_threshold);
+}
+
+void DepthNormalPyramid::pyrDown()
+{
+  // Some parameters need to be adjusted
+  num_features /= 2; /// @todo Why not 4?
+  extract_threshold /= 2;
+  ++pyramid_level;
+
+  // In this case, NN-downsample the quantized image
+  Mat next_normal;
+  Size size(normal.cols / 2, normal.rows / 2);
+  resize(normal, next_normal, size, 0.0, 0.0, INTER_NEAREST);
+  normal = next_normal;
+  if (!mask.empty())
+  {
+    Mat next_mask;
+    resize(mask, next_mask, size, 0.0, 0.0, INTER_NEAREST);
+    mask = next_mask;
+  }
+}
+
+void DepthNormalPyramid::quantize(Mat& dst) const
+{
+  dst = Mat::zeros(normal.size(), CV_8U);
+  normal.copyTo(dst, mask);
+}
+
+bool DepthNormalPyramid::extractTemplate(Template& templ) const
+{
+  // Features right on the object border are unreliable
+  Mat local_mask;
+  if (!mask.empty())
+  {
+    erode(mask, local_mask, Mat(), Point(-1,-1), 2, BORDER_REPLICATE);
+  }
+
+  // Compute distance transform for each individual quantized orientation
+  Mat temp = Mat::zeros(normal.size(), CV_8U);
+  Mat distances[8];
+  for (int i = 0; i < 8; ++i)
+  {
+    temp.setTo(1 << i, local_mask);
+    bitwise_and(temp, normal, temp);
+    // temp is now non-zero at pixels in the mask with quantized orientation i
+    distanceTransform(temp, distances[i], DIST_C, 3);
+  }
+
+  // Count how many features taken for each label
+  int label_counts[8] = {0, 0, 0, 0, 0, 0, 0, 0};
+
+  // Create sorted list of candidate features
+  std::vector<Candidate> candidates;
+  bool no_mask = local_mask.empty();
+  for (int r = 0; r < normal.rows; ++r)
+  {
+    const uchar* normal_r = normal.ptr<uchar>(r);
+    const uchar* mask_r = no_mask ? NULL : local_mask.ptr<uchar>(r);
+
+    for (int c = 0; c < normal.cols; ++c)
+    {
+      if (no_mask || mask_r[c])
+      {
+        uchar quantized = normal_r[c];
+
+        if (quantized != 0 && quantized != 255) // background and shadow
+        {
+          int label = getLabel(quantized);
+
+          // Accept if distance to a pixel belonging to a different label is greater than
+          // some threshold. IOW, ideal feature is in the center of a large homogeneous
+          // region.
+          float score = distances[label].at<float>(r, c);
+          if (score >= extract_threshold)
+          {
+            candidates.push_back( Candidate(c, r, label, score) );
+            ++label_counts[label];
+          }
+        }
+      }
+    }
+  }
+  // We require a certain number of features
+  if (candidates.size() < num_features)
+    return false;
+
+  // Prefer large distances, but also want to collect features over all 8 labels.
+  // So penalize labels with lots of candidates.
+  for (size_t i = 0; i < candidates.size(); ++i)
+  {
+    Candidate& c = candidates[i];
+    c.score /= (float)label_counts[c.f.label];
+  }
+  std::stable_sort(candidates.begin(), candidates.end());
+
+  // Use heuristic based on object area for initial distance threshold
+  float area = no_mask ? (float)normal.total() : (float)countNonZero(local_mask);
+  float distance = sqrtf(area) / sqrtf((float)num_features) + 1.5f;
+  selectScatteredFeatures(candidates, templ.features, num_features, distance);
+
+  // Size determined externally, needs to match templates for other modalities
+  templ.width = -1;
+  templ.height = -1;
+  templ.pyramid_level = pyramid_level;
+
+  return true;
+}
+
+DepthNormal::DepthNormal()
+  : distance_threshold(2000),
+    difference_threshold(50),
+    num_features(63),
+    extract_threshold(2)
+{
+}
+
+DepthNormal::DepthNormal(int _distance_threshold, int _difference_threshold, size_t _num_features,
+                         int _extract_threshold)
+  : distance_threshold(_distance_threshold),
+    difference_threshold(_difference_threshold),
+    num_features(_num_features),
+    extract_threshold(_extract_threshold)
+{
+}
+
+static const char DN_NAME[] = "DepthNormal";
+
+cv::String DepthNormal::name() const
+{
+  return DN_NAME;
+}
+
+void DepthNormal::read(const FileNode& fn)
+{
+  String type = fn["type"];
+  CV_Assert(type == DN_NAME);
+
+  distance_threshold = fn["distance_threshold"];
+  difference_threshold = fn["difference_threshold"];
+  num_features = int(fn["num_features"]);
+  extract_threshold = fn["extract_threshold"];
+}
+
+void DepthNormal::write(FileStorage& fs) const
+{
+  fs << "type" << DN_NAME;
+  fs << "distance_threshold" << distance_threshold;
+  fs << "difference_threshold" << difference_threshold;
+  fs << "num_features" << int(num_features);
+  fs << "extract_threshold" << extract_threshold;
+}
+
+
+
+
+} // namespace linemod

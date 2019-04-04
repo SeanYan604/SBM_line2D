@@ -109,19 +109,19 @@ void circle_gen(){
 }
 
 
-void noise_test(string mode = "test"){
-    line2Dup::Detector detector(80, {4, 8});
+void detection(string detect_mode, string mode = "test"){
+    linemod::Detector detector(30, {4, 8}, detect_mode);
 //    mode = "none";
     if(mode == "train"){
-        Mat img = imread(prefix+"case4/train.png");
+        Mat img = imread(prefix+"case5/train.png");
         Mat mask = Mat(img.size(), CV_8UC1, {255});
 
         shape_based_matching::shapeInfo shapes(img, mask);
         shapes.angle_range = {0, 360};
         shapes.angle_step = 1;
-        shapes.scale_range = {0.8, 1.2};
+        shapes.scale_range = {0.5, 1};
         shapes.scale_step = 0.1;
-        shapes.produce_infos();
+        shapes.produce_infos();     // 生成形状信息
         std::vector<shape_based_matching::shapeInfo::shape_and_info> infos_have_templ;
         string class_id = "test";
         for(auto& info: shapes.infos){
@@ -129,21 +129,20 @@ void noise_test(string mode = "test"){
             waitKey(1);
 
             std::cout << "\ninfo.angle: " << info.angle << std::endl;
-            int templ_id = detector.addTemplate(info.src, class_id, info.mask);
+            int templ_id = detector.addTemplate(info.src, class_id, info.mask, info.angle, info.scale);
             std::cout << "templ_id: " << templ_id << std::endl;
             if(templ_id != -1){
                 infos_have_templ.push_back(info);
             }
         }
-        detector.writeClasses(prefix+"case4/%s_templ.yaml");
-        shapes.save_infos(infos_have_templ, shapes.src, shapes.mask, prefix + "case4/test_info.yaml");
+        detector.writeClasses(prefix+"case5/%s_templ.yaml");
+        shapes.save_infos(infos_have_templ, shapes.src, shapes.mask, prefix + "case5/test_info.yaml");
         std::cout << "train end" << std::endl;
     }else if(mode=="test"){
         std::vector<std::string> ids;
         ids.push_back("test");
-        detector.readClasses(ids, prefix+"case4/%s_templ.yaml");
-
-        Mat test_img = imread(prefix+"case4/test.png");
+        detector.readClasses(ids, prefix+"case5/%s_templ.yaml");
+        Mat test_img = imread(prefix+"case5/test.png");
 
         int stride = 16;
         int n = test_img.rows/stride;
@@ -196,13 +195,19 @@ void noise_test(string mode = "test"){
             randColor[1] = rand()%155 + 100;
             randColor[2] = rand()%155 + 100;
 
+            std::ostringstream angle;
+            std::ostringstream scale;
+            angle << match.angle;
+            scale << match.scale;
+
             for(int i=0; i<templ[0].features.size(); i++){
                 auto feat = templ[0].features[i];
                 cv::circle(test_img, {feat.x+match.x, feat.y+match.y}, 2, randColor, -1);
             }
 
-            cv::putText(test_img, to_string(int(round(match.similarity))),
-                        Point(match.x+r-10, match.y-3), FONT_HERSHEY_PLAIN, 2, randColor);
+            cv::putText(test_img, to_string(int(round(match.similarity)))+" "+ angle.str()+" "+ scale.str(),
+                        Point(match.x+r, match.y-3), FONT_HERSHEY_PLAIN, 1, randColor);
+
             cv::rectangle(test_img, {match.x, match.y}, {x, y}, randColor, 2);
 
             std::cout << "\nmatch.template_id: " << match.template_id << std::endl;
@@ -216,6 +221,6 @@ void noise_test(string mode = "test"){
     }
 }
 int main(){
-    noise_test("test");
+    detection("Line2D");           ///  detect_mode include:  "Line2D", "LineMod"
     return 0;
 }
