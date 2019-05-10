@@ -1,4 +1,5 @@
 cmake_minimum_required(VERSION 2.8)
+# set( CMAKE_CXX_FLAGS "-std=c++11" )
 set (CMAKE_CXX_STANDARD 14)
 project(shape_based_matching)
 
@@ -11,11 +12,13 @@ SET(CMAKE_CXX_FLAGS_RELEASE "-O3")
 
 set(CMAKE_PREFIX_PATH ${CMAKE_PREFIX_PATH})
 find_package(OpenCV 3.4.4 REQUIRED)
-include_directories(${OpenCV_INCLUDE_DIRS})
+include_directories(${OpenCV_INCLUDE_DIRS} include)
 
 set(SOURCE
-    line2Dup.cpp)
+    src/line2Dup.cpp
+    src/utils_.cpp
+    )
 
-add_executable(${PROJECT_NAME}_executable ${SOURCE} test.cpp)
+add_executable(${PROJECT_NAME}_executable ${SOURCE} src/test.cpp)
 target_link_libraries(${PROJECT_NAME}_executable ${OpenCV_LIBS})
 
